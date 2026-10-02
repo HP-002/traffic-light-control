@@ -126,16 +126,79 @@ class TrafficLightEnv(gym.Env):
         if self.stochastic:
             pass
         else:
-            self
+            if self.step_count % 4 == 0:
+                self.traffic_count[0] += 1 # North
+            elif self.step_count % 4 == 1:
+                self.traffic_count[1] += 1 # South
+            elif self.step_count % 4 == 2:
+                self.traffic_count[2] += 1 # East
+            else:
+                self.traffic_count[3] += 1 # West
+
+        self.traffic_count = np.minimum(self.traffic_count, self.max_traffic_count)
 
     def _process_car(self):
-        """Remove a car from the intersection if possible"""
-        pass
+        """Remove a car from the intersection if possible
+        
+        Returns:
+            cars_processed: number of cars processed
+        """
+        cars_processed= 0
+
+        if self.light_state == LightState.NS_GREEN:
+            if self.traffic_count[0] > 0:
+                self.traffic_count[0] -= 1
+                cars_processed += 1
+
+            if self.traffic_count[1] > 0:
+                self.traffic_count[1] -= 1
+                cars_processed += 1
+
+        elif self.light_state == LightState.EW_GREEN:
+            if self.traffic_count[2] > 0:
+                self.traffic_count[2] -= 1
+                cars_processed += 1
+
+            if self.traffic_count[3] > 0:
+                self.traffic_count[3] -= 1
+                cars_processed += 1
+
+        self.cars_processed += cars_processed
+
+        return cars_processed
 
     def _get_reward(self):
         """Calculate the reward based on the number of cars processed"""
         pass
+
+    def _get_traffic_state(self, count):
+        """Find the state of the traffic based on traffic count
+        
+        Args:
+            count: traffic count (i.e. number of cars waiting)
+
+        Returns:
+            TrafficState: Empty for 0, Light for 1, Moderate for 2, Heavy for 3+ cars
+        """
+        state = TrafficState.EMPTY
+
+        if count == 1:
+            state = TrafficState.LIGHT_TRAFFIC
+        elif count == 2:
+            state = TrafficState.MODERATE_TRAFFIC
+        elif count >= 3:
+            state = TrafficState.HEAVY_TRAFFIC
     
+        return state
+
+    def _get_traffic_states(self):
+        """Convert traffic_count list to traffic states list
+
+        Returns:
+            np.Array: Traffic States for each side (North, South, East, West)
+        """
+        return np.array([self._get_traffic_state(x) for x in self.traffic_count], dtype=np.int64)
+
     def step(self, action: Actions):
         """
         Execute one timestep within the environment
