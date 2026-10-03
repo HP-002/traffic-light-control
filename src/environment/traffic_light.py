@@ -54,7 +54,7 @@ class TrafficLightEnv(gym.Env):
             np.array: Array with [Light State, N traffic, S traffic, E traffic, W traffic]
         """
         return np.array([
-            self.light_state, 
+            self.light_state.value, 
             self.traffic_count[0], 
             self.traffic_count[1], 
             self.traffic_count[2], 
@@ -167,9 +167,17 @@ class TrafficLightEnv(gym.Env):
 
         return cars_processed
 
-    def _get_reward(self):
-        """Calculate the reward based on the number of cars processed"""
-        pass
+    def _get_reward(self, cars_processed):
+        """Calculate the reward based on the number of cars processed and cars waiting.
+        +5 for every car passed and -1 for every car in the intersection.
+
+        Args:
+            cars_processed: number of cars that passed
+
+        Returns:
+            float: reward
+        """
+        return float(5 * cars_processed - self._get_cars_waiting())
 
     def _get_traffic_state(self, count):
         """Find the state of the traffic based on traffic count
@@ -197,7 +205,17 @@ class TrafficLightEnv(gym.Env):
         Returns:
             np.Array: Traffic States for each side (North, South, East, West)
         """
-        return np.array([self._get_traffic_state(x) for x in self.traffic_count], dtype=np.int64)
+        return np.array([self._get_traffic_state(x).value for x in self.traffic_count], dtype=np.int64)
+
+    def _get_cars_waiting(self):
+        """Calculate the number of cars waiting at the intersection (all sides).
+        
+        Returns:
+            cars_waiting: the total number of cars waiting at the intersection (all sides)
+        """
+        cars_waiting = np.sum(self.traffic_count)
+
+        return cars_waiting
 
     def step(self, action: Actions):
         """
@@ -205,8 +223,37 @@ class TrafficLightEnv(gym.Env):
 
         Args:
             action: Action to take
+
+        Returns:
+            observation: [Light State, N traffic, S traffic, E traffic, W traffic]
+            reward: +5 per car processed, -1 per car waiting
+            terminated: True once max_cars_to_proccess have been processed
+            truncated: True once max_steps steps have been taken
+            info: internal parameters
         """
-        pass
+        action = Actions(int(action))
+        requested_state = LightState(action.value)
+
+        # Check if the action is allowed. If not, leave it unchanged for the step
+        if self._allowed_light_change(requested_state):
+            self.light_state = requested_state
+
+        cars_processed = self._process_car()
+
+        # reqard will be +5 for each car processed and -1 for each car waiting
+        reward = self._get_reward(cars_processed)
+
+        # Add more cars to environment
+        self._add_car()
+        self.step_count += 1
+
+        terminated = self.cars_processed >= self.max_cars_to_proccess
+        truncated = self.step_count >= self.max_steps
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        return observation, reward, terminated, truncated, info
 
     def render(self):
         """
