@@ -59,7 +59,11 @@ class Agent(ABC):
         """
 
     @abstractmethod
-    def update_q_value(self, state, action, reward, next_state):
+    def get_action_values(self, s):
+        """Returns the values of the actions for the given state from the Q table(s)"""
+
+    @abstractmethod
+    def update_q_value(self, state, action, reward, next_state, terminated):
         """Update the value in the Q-table based on the agent's algorithm."""
 
     def update_epsilon(self):
@@ -98,7 +102,7 @@ class Agent(ABC):
     def print_q_table(self, filename=None):
         """Print the Q-table as a labelled pandas dataframe and saves it to `filename` if provided.
 
-        nFor Double Q-Learning the two tables are averaged.
+        For Double Q-Learning the two tables are averaged.
 
         Returns:
             `pd.DataFrame`: the Q-table indexed by state, with actions as columns.
@@ -129,8 +133,8 @@ class Agent(ABC):
         Returns
             int: The best action to take for the given state `s`
         """
-        action_values = self._get_action_values(s)
-        return np.argmax(action_values)
+        action_values = self.get_action_values(s)
+        return int(self.rng.choice(np.flatnonzero(action_values == action_values.max())))
 
     def choose_action(self, s):
         """Epsilon-Greedy policy.
@@ -164,7 +168,7 @@ class Agent(ABC):
                 a = self.choose_action(s)
 
                 next_state, reward, terminated, truncated, _ = self.env.step(a)
-                self.update_q_value(state, a, reward, next_state)
+                self.update_q_value(state, a, reward, next_state, terminated)
 
                 total_reward += reward
                 state = next_state
