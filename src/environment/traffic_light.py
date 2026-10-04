@@ -10,6 +10,18 @@ from actions import Actions
 class TrafficLightEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
+    # Maps LightState to (index of the light in traffic_count, True if light is Green).
+    traffic_light_index = {
+        LightState.N_GREEN: (0, True),
+        LightState.N_YELLOW: (0, False), 
+        LightState.S_GREEN: (1, True),
+        LightState.S_YELLOW: (1, False),
+        LightState.E_GREEN: (2, True),
+        LightState.E_YELLOW: (2, False),
+        LightState.W_GREEN: (3, True),
+        LightState.W_YELLOW: (3, False),
+    }
+
     def __init__(
         self,
         max_steps=25,
@@ -41,7 +53,7 @@ class TrafficLightEnv(gym.Env):
         self.action_space = spaces.Discrete(len(Actions))
         # Observation space
         # Each State is [Light State, North Traffic, South Traffic, East Traffic, West Traffic]
-        self.observation_space = spaces.MultiDiscrete([len(LightState)] + [self.max_traffic_count + 1] * 4)
+        self.observation_space = spaces.MultiDiscrete([len(LightState)] + [len(TrafficState)] * 4)
 
         self.step_count = 0
         self.cars_processed = 0
@@ -61,12 +73,13 @@ class TrafficLightEnv(gym.Env):
         Returns:
             np.array: Array with [Light State, N traffic, S traffic, E traffic, W traffic]
         """
+        traffic_states = self._get_traffic_states()
         return np.array([
             self.light_state.value, 
-            self.traffic_count[0], 
-            self.traffic_count[1], 
-            self.traffic_count[2], 
-            self.traffic_count[3]
+            traffic_states[0], 
+            traffic_states[1], 
+            traffic_states[2], 
+            traffic_states[3]
         ], dtype=np.int64)
 
     def _get_info(self):
@@ -113,23 +126,37 @@ class TrafficLightEnv(gym.Env):
         allowed_changes = {
             LightState.ALL_RED: {
                 LightState.ALL_RED,
-                LightState.NS_GREEN,
-                LightState.EW_GREEN,
+                LightState.N_GREEN, LightState.S_GREEN,
+                LightState.E_GREEN, LightState.W_GREEN,
             },
-            LightState.NS_GREEN: {
-                LightState.NS_GREEN,
-                LightState.NS_YELLOW,
+            LightState.N_GREEN: {
+                LightState.N_GREEN,
+                LightState.N_YELLOW,
             },
-            LightState.NS_YELLOW: {
+            LightState.N_YELLOW: {
                 LightState.ALL_RED,
             },
-            LightState.EW_GREEN: {
-                LightState.EW_GREEN,
-                LightState.EW_YELLOW
+            LightState.S_GREEN: {
+                LightState.S_GREEN,
+                LightState.S_YELLOW,
             },
-            LightState.EW_YELLOW: {
+            LightState.S_YELLOW: {
                 LightState.ALL_RED,
-            }
+            },
+            LightState.E_GREEN: {
+                LightState.E_GREEN,
+                LightState.E_YELLOW,
+            },
+            LightState.E_YELLOW: {
+                LightState.ALL_RED,
+            },
+            LightState.W_GREEN: {
+                LightState.W_GREEN,
+                LightState.W_YELLOW,
+            },
+            LightState.W_YELLOW: {
+                LightState.ALL_RED,
+            },
         }
 
         return next_state in allowed_changes[self.light_state]
@@ -137,7 +164,15 @@ class TrafficLightEnv(gym.Env):
     def _add_car(self):
         """Add a car to the intersection"""
         if self.stochastic:
-            pass
+            p = np.random.random()
+            if p <= 0.25:
+                self.traffic_count[0] += 1 # North
+            elif p <= 0.5:
+                self.traffic_count[1] += 1 # South
+            elif p <= 0.75:
+                self.traffic_count[2] += 1 # East
+            else:
+                self.traffic_count[3] += 1 # West
         else:
             if self.step_count % 4 == 0:
                 self.traffic_count[0] += 1 # North
@@ -151,34 +186,29 @@ class TrafficLightEnv(gym.Env):
         self.traffic_count = np.minimum(self.traffic_count, self.max_traffic_count)
 
     def _process_car(self):
-        """Remove a car from the intersection if possible
+        """Remove cars from the intersection if possible. For any side:
+        - If the side is GREEN, at most 2 cars are processed.
+        - If the side is YELLOW, at most 1 car is processed.
         
         Returns:
-            cars_processed: number of cars processed
+            cars_to_process: number of cars processed or removed
         """
-        cars_processed= 0
+        # No car to process
+        cars_to_process = 0
 
-        if self.light_state == LightState.NS_GREEN:
-            if self.traffic_count[0] > 0:
-                self.traffic_count[0] -= 1
-                cars_processed += 1
+        idx, is_green = self.traffic_light_index.get(self.light_state, (None, False))
 
-            if self.traffic_count[1] > 0:
-                self.traffic_count[1] -= 1
-                cars_processed += 1
+        # if (not all RED) and (there is at least one car for the NON-RED side)
+        if idx is not None and self.traffic_count[idx] > 0:
+            cars_to_process = 1
+            # If light is green and it has at least 2 cars, then process 2 cars
+            if is_green and self.traffic_count[idx] > 1:
+                cars_to_process = 2
+                
+            self.traffic_count[idx] -= cars_to_process
 
-        elif self.light_state == LightState.EW_GREEN:
-            if self.traffic_count[2] > 0:
-                self.traffic_count[2] -= 1
-                cars_processed += 1
-
-            if self.traffic_count[3] > 0:
-                self.traffic_count[3] -= 1
-                cars_processed += 1
-
-        self.cars_processed += cars_processed
-
-        return cars_processed
+        self.cars_processed += cars_to_process
+        return cars_to_process
 
     def _get_reward(self, cars_processed):
         """Calculate the reward based on the number of cars processed and cars waiting.
@@ -282,25 +312,34 @@ class TrafficLightEnv(gym.Env):
         Returns:
             color: "red", "yellow" or "green"
         """
-        ns = direction == "N" or direction == "S"
+        current_light = self.light_state
 
-        if self.light_state == LightState.NS_GREEN:
-            return "green" if ns else "red"
-        if self.light_state == LightState.NS_YELLOW:
-            return "yellow" if ns else "red"
-        if self.light_state == LightState.EW_GREEN:
-            return "red" if ns else "green"
-        if self.light_state == LightState.EW_YELLOW:
-            return "red" if ns else "yellow"
+        if direction == "N":
+            if current_light == LightState.N_GREEN:
+                return "green"
+            elif current_light == LightState.N_YELLOW:
+                return "yellow"
+        elif direction == "S":
+            if current_light == LightState.S_GREEN:
+                return "green"
+            elif current_light == LightState.S_YELLOW:
+                return "yellow"
+        elif direction == "E":
+            if current_light == LightState.E_GREEN:
+                return "green"
+            elif current_light == LightState.E_YELLOW:
+                return "yellow"
+        elif direction == "W":
+            if current_light == LightState.W_GREEN:
+                return "green"
+            elif current_light == LightState.W_YELLOW:
+                return "yellow"
 
         return "red"
 
     def render(self):
         """
         Visualize the environment
-
-        Draws the 4x4 intersection next to a panel with the step, action,
-        reward and whether that action was rejected as an illegal change.
 
         Returns:
             np.array: RGB frame if render_mode is "rgb_array", else None

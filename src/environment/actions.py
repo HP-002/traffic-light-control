@@ -2,7 +2,11 @@ from enum import Enum
 
 class Actions(Enum):
     ALL_RED     = 0
-    NS_GREEN    = 1
-    NS_YELLOW   = 2
-    EW_GREEN    = 3
-    EW_YELLOW   = 4
+    N_GREEN     = 1
+    N_YELLOW    = 2
+    S_GREEN     = 3
+    S_YELLOW    = 4
+    E_GREEN     = 5
+    E_YELLOW    = 6
+    W_GREEN     = 7
+    W_YELLOW    = 8
