@@ -122,3 +122,84 @@ class Agent(ABC):
             df.to_csv(filename)
 
         return df
+
+    def greedy_action(self, s):
+        """Choose the greedy action for the given state s
+        
+        Returns
+            int: The best action to take for the given state `s`
+        """
+        action_values = self._get_action_values(s)
+        return np.argmax(action_values)
+
+    def choose_action(self, s):
+        """Epsilon-Greedy policy.
+        - Chooses random action with a probability of epsilon
+        - Chooses greedy action with a probability of 1 - epsilon
+
+        Returns:
+            int: An action to take for the given state `s` 
+        """
+        if self.rng.random() <= self.epsilon:
+            return self.rng.integers(self.n_actions)
+        return self.greedy_action(s)
+    
+    def train(self, n_episodes=10):
+        """Train the agent for given number of episodes.
+
+        Args:
+            `n_episodes`: The number of episodes to train for. default = 10
+        """
+        self.reward_per_episode = []
+        self.epsilon_per_episode = []
+        for _ in range(n_episodes):
+            obs, _ = self.env.reset()
+            total_reward = 0.0
+
+            state = obs
+            completed = False
+
+            while not completed:
+                s = self.get_state_row(state)
+                a = self.choose_action(s)
+
+                next_state, reward, terminated, truncated, _ = self.env.step(a)
+                self.update_q_value(state, a, reward, next_state)
+
+                total_reward += reward
+                state = next_state
+                completed = terminated or truncated
+
+            self.reward_per_episode.append(total_reward)
+            self.epsilon_per_episode.append(self.epsilon)
+            self.update_epsilon()
+
+    def evaluate(self, n_episodes=10):
+        """Run the agent for given number of episodes based on the learned Q-table. Only chooses greedy actions.
+        
+        Args:
+            `n_episodes`: The number of episodes to evaluate for. default = 10
+        Returns:
+            `total_rewards`: List of total rewards for each episode.
+        """
+        total_rewards = []
+        for _ in range(n_episodes):
+            obs, _ = self.env.reset()
+            total_reward = 0.0
+
+            state = obs
+            completed = False
+
+            while not completed:
+                s = self.get_state_row(state)
+                a = self.greedy_action(s)
+
+                next_state, reward, terminated, truncated, _ = self.env.step(a)
+
+                total_reward += reward
+                state = next_state
+                completed = terminated or truncated
+
+            total_rewards.append(total_reward)
+            
+        return total_rewards
