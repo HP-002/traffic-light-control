@@ -1,8 +1,11 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
+import pandas as pd
 
 from environment.traffic_light import TrafficLightEnv
+from environment.states import LightState, TrafficState
+from environment.actions import Actions
 
 class Agent(ABC):
     def __init__(
@@ -30,6 +33,7 @@ class Agent(ABC):
 
         # Seed for randomness
         self.seed = seed
+        self.rng = np.random.default_rng(seed=self.seed)
 
         # Observation space is [Light, N traffic, S traffic, E traffic, W traffic].
         # The dimensions of each are [9, 4, 4, 4, 4]
@@ -49,17 +53,72 @@ class Agent(ABC):
 
     @abstractmethod
     def get_q_tables(self):
-        """Returns the Q table. If multiple, returns as a tuple."""
+        """Returns 2 Q tables along with a boolean flag.
+        - If the flag is True, 2 tables exist (Double Q-Learning) and both are returned.
+        - If the flag is False, 1 table exists (Q-Learning) and the second value returned will be None.
+        """
 
     @abstractmethod
     def update_q_value(self, state, action, reward, next_state):
         """Update the value in the Q-table based on the agent's algorithm."""
 
     def update_epsilon(self):
-        """Update epsilon value based on decay."""
+        """Update epsilon value based on decay.
+        New epsilon value is `max(min_epsilon, epsilon_decay * epsilon)`
+        """
         self.epsilon = max(self.min_epsilon, self.epsilon_decay * self.epsilon)
 
     def get_state_row(self, state):
-        """Get the row index based on the state"""
+        """Get the row index based on the state (Light, N traffic, S traffic, E traffic, W traffic).
+
+        Args:
+            state: The state in the format (Light, N, S, E, W) as returned by `_get_obs()` by the environment.
+        Returns:
+            `int`: the row index of the state `state` in the Q Table.
+        """
         s = [int(x) for x in state]
         return np.ravel_multi_index(s, self.state_dimensions)
+
+    def get_reward_per_episode(self):
+        """Returns total reward per episode.
+        
+        Returns:
+            `list`: of size `n_episodes` with total reward for that episode.
+        """
+        return self.reward_per_episode
+
+    def get_epsilon_per_episode(self):
+        """Returns epsilon values per episode.
+        
+        Returns:
+            `list`: of size `n_episodes` with epsilon value for that episode.
+        """
+        return self.epsilon_per_episode
+
+    def print_q_table(self, filename=None):
+        """Print the Q-table as a labelled pandas dataframe and saves it to `filename` if provided.
+
+        nFor Double Q-Learning the two tables are averaged.
+
+        Returns:
+            `pd.DataFrame`: the Q-table indexed by state, with actions as columns.
+        """
+        Q1, Q2, flag = self.get_q_tables()
+
+        Q = (Q1 + Q2) / 2 if flag else Q1
+
+        states = [
+            f"({LightState(s[0]).name}, {', '.join(TrafficState(t).name for t in s[1:])})"
+            for s in np.ndindex(self.state_dimensions)
+        ]
+        actions = [action.name for action in Actions]
+
+        df = pd.DataFrame(Q, index=states, columns=actions)
+
+        print("Q Table:")
+        print(df)
+        
+        if filename:
+            df.to_csv(filename)
+
+        return df
