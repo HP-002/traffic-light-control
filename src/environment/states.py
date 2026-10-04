@@ -16,3 +16,7 @@ class TrafficState(Enum):
     LIGHT_TRAFFIC       = 1
     MODERATE_TRAFFIC    = 2
     HEAVY_TRAFFIC       = 3
+
+class GreenTimeState(Enum):
+    BELOW = 0
+    ABOVE = 1
