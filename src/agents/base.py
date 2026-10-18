@@ -33,7 +33,7 @@ class Agent(ABC):
 
         # Seed for randomness
         self.seed = seed
-        self.rng = np.random.default_rng(seed=self.seed)
+        self.rng = np.random.default_rng(np.random.SeedSequence(self.seed).spawn(1)[0])
 
         # Observation space is [Light, N traffic, S traffic, E traffic, W traffic, Extra time].
         # The dimensions of each are [9, 4, 4, 4, 4, 2]
@@ -111,11 +111,13 @@ class Agent(ABC):
 
         Q = (Q1 + Q2) / 2 if flag else Q1
 
+        # Enum per observation dimension, matching the env's observation space layout
+        state_enums = [LightState] + [TrafficState] * self.env.NUM_SIDES + [ExtraTimeState]
         states = [
-            f"({LightState(s[0]).name}, {TrafficState(s[1]).name}, {TrafficState(s[2]).name}, {TrafficState(s[3]).name}, {TrafficState(s[4]).name}, {ExtraTimeState(s[5]).name})"
+            "(" + ", ".join(enum(v).name for enum, v in zip(state_enums, s, strict=True)) + ")"
             for s in np.ndindex(self.state_dimensions)
         ]
-        actions = [action.name for action in Actions]
+        actions = [Actions(a).name for a in range(self.n_actions)]
 
         df = pd.DataFrame(Q, index=states, columns=actions)
 
@@ -133,8 +135,15 @@ class Agent(ABC):
         Returns
             int: The best action to take for the given state `s`
         """
-        action_values = self.get_action_values(s)
-        return int(self.rng.choice(np.flatnonzero(action_values == action_values.max())))
+        return self.random_argmax(self.get_action_values(s))
+
+    def random_argmax(self, values):
+        """Index of the maximum value in `values`, breaking ties uniformly at random.
+
+        Returns:
+            int: Index of a maximum value
+        """
+        return int(self.rng.choice(np.flatnonzero(values == values.max())))
 
     def choose_action(self, s):
         """Epsilon-Greedy policy.
@@ -144,18 +153,17 @@ class Agent(ABC):
         Returns:
             int: An action to take for the given state `s` 
         """
-        if self.rng.random() <= self.epsilon:
-            return self.rng.integers(self.n_actions)
+        if self.rng.random() < self.epsilon:
+            return int(self.rng.integers(self.n_actions))
         return self.greedy_action(s)
     
     def train(self, n_episodes=10):
         """Train the agent for given number of episodes.
+        Repeated calls continue training and append to the reward and epsilon logs.
 
         Args:
             `n_episodes`: The number of episodes to train for. default = 10
         """
-        self.reward_per_episode = []
-        self.epsilon_per_episode = []
         for _ in range(n_episodes):
             obs, _ = self.env.reset()
             total_reward = 0.0

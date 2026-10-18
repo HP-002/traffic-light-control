@@ -43,7 +43,7 @@ class DoubleQLearningAgent(Agent):
 
         if self.rng.random() < 0.5:
             # Q1(S,A) <- Q1(S,A) + alpha*[R + gamma*Q2(S',max_a Q1(S',A)) - Q1(S,A)]
-            max_action = np.argmax(self.Q1[s_dash])
+            max_action = self.random_argmax(self.Q1[s_dash])
             max_value = self.Q2[s_dash][max_action]
             if terminated:
                 target = reward
@@ -52,7 +52,7 @@ class DoubleQLearningAgent(Agent):
             self.Q1[s][a] += self.lr * (target - self.Q1[s][a])
         else:
             # Q2(S,A) <- Q2(S,A) + alpha*[R + gamma*Q1(S',max_a Q2(S',A)) - Q2(S,A)]
-            max_action = np.argmax(self.Q2[s_dash])
+            max_action = self.random_argmax(self.Q2[s_dash])
             max_value = self.Q1[s_dash][max_action]
             if terminated:
                 target = reward
