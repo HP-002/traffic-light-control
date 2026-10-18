@@ -24,23 +24,21 @@ class TabularQLAgent(TabularAgent):
         """
         return self.Q[s]
     
-    def update_q_value(self, state, action, reward, next_state, terminated):
+    def update_q_value(self, s, action, reward, s_dash, terminated):
         """Update value for the given state-action pair based on the reward and next state following the Q-Learning algorithm.
         Q(S,A) <- Q(S,A) + alpha*[R + gamma*max_a Q(S',A) - Q(S,A)]
 
         Args:
-            state: Current State.
+            s: Q table row of the current state.
             action: Action taken from current state.
             reward: Immediate reward recieved.
-            next_state: The next state reached.
+            s_dash: Q table row of the next state reached.
             terminated: True if next state is terminal, else False.
         """
 
-        s_dash = self.get_state_row(next_state)
         action_values = self.get_action_values(s_dash)
         max_value = action_values[np.argmax(action_values)]
 
-        s = self.get_state_row(state)
         a = int(action)
 
         # Q(S,A) <- Q(S,A) + alpha*[R + gamma*max_a Q(S',A) - Q(S,A)]

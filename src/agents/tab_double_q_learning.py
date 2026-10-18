@@ -25,20 +25,18 @@ class TabularDoubleQLAgent(TabularAgent):
         """
         return self.Q1[s] + self.Q2[s]
     
-    def update_q_value(self, state, action, reward, next_state, terminated):
+    def update_q_value(self, s, action, reward, s_dash, terminated):
         """Update value for the given state-action pair based on the reward and next state following the Double Q-Learning algorithm.
         - With Probability 0.5: Q1(S,A) <- Q1(S,A) + alpha*[R + gamma*Q2(S',max_a Q1(S',A)) - Q1(S,A)]
         - with Probability 0.5: Q2(S,A) <- Q2(S,A) + alpha*[R + gamma*Q1(S',max_a Q2(S',A)) - Q2(S,A)]
 
         Args:
-            state: Current State.
+            s: Q table row of the current state.
             action: Action taken from current state.
             reward: Immediate reward recieved.
-            next_state: The next state reached.
+            s_dash: Q table row of the next state reached.
             terminated: True if next state is terminal, else False.
         """
-        s_dash = self.get_state_row(next_state)
-        s = self.get_state_row(state)
         a = int(action)
 
         if self.rng.random() < 0.5:
