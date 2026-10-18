@@ -28,7 +28,7 @@ class TrafficLightEnv(gym.Env):
     def __init__(
         self,
         max_steps=25,
-        max_cars_to_proccess=15,
+        max_cars_to_process=15,
         max_traffic_count=5,
         arrival_rate=0.3,
         deterministic_arrival_count=2,
@@ -44,14 +44,38 @@ class TrafficLightEnv(gym.Env):
         seed=42,
         render_mode=None,
     ):
-        """
-        Initialize the class
+        """Initialize the environment
+
+        Args:
+            max_steps: steps before the episode is truncated
+            max_cars_to_process: cars to process before the episode is terminated
+            max_traffic_count: maximum cars waiting on a single side
+            arrival_rate: Poisson rate of arriving cars when stochastic. A number for all sides or a list of 4 values (N, S, E, W)
+            deterministic_arrival_count: cars added to one side each step when not stochastic
+            car_process_count: max cars processed in one step as (green, yellow)
+            render_fps: frames per second for rendering
+            illegal_action_penalty: reward for an illegal light change
+            car_process_reward: reward per car processed
+            car_waiting_reward: reward per car waiting on a red side
+            traffic_thresholds: max cars for (LIGHT, MODERATE) traffic. HEAVY above that.
+                Must satisfy 1 <= LIGHT < MODERATE < max_traffic_count so every state is reachable
+            time_threshold: consecutive steps one side can be green or yellow (counted together)
+                before the processing reward starts to decay and ExtraTimeState flips to ABOVE
+            penalty_factor: fraction of the processing reward kept per step above time_threshold
+                (0.95 keeps 95%, i.e. 5% decay per step)
+            stochastic: if True, cars arrive randomly, else in a fixed rotation
+            seed: seed for the random number generator
+            render_mode: "human", "rgb_array" or None
+
+        Raises:
+            ValueError: if arrival_rate is a list without 4 values, car_process_count is not a
+                (green, yellow) pair, or traffic_thresholds is not a valid pair
         """
         # Maximum steps to take by agent
         self.max_steps = max_steps
 
         # maximum cars to process
-        self.max_cars_to_proccess = max_cars_to_proccess
+        self.max_cars_to_process = max_cars_to_process
 
         # Arrival rate for cars on each side (N, S, E, W)
         if np.isscalar(arrival_rate):
@@ -68,11 +92,20 @@ class TrafficLightEnv(gym.Env):
         self.max_traffic_count = max_traffic_count
 
         # Number of cars to process when light is green and yellow
+        if np.isscalar(car_process_count) or len(car_process_count) != 2:
+            raise ValueError(f"car_process_count must be a (green, yellow) pair, got {car_process_count}")
         self.car_process_count_green = car_process_count[0]
         self.car_process_count_yellow = car_process_count[1]
 
         # Used to bucketize the traffic into LIGHT_TRAFFIC, MODERATE_TRAFFIC, and HEAVY_TRAFFIC
-        self.traffic_thresholds = traffic_thresholds
+        if np.isscalar(traffic_thresholds) or len(traffic_thresholds) != 2:
+            raise ValueError(f"traffic_thresholds must be a (LIGHT, MODERATE) pair, got {traffic_thresholds}")
+        if not 1 <= traffic_thresholds[0] < traffic_thresholds[1] < max_traffic_count:
+            raise ValueError(
+                f"traffic_thresholds must satisfy 1 <= LIGHT < MODERATE < max_traffic_count ({max_traffic_count}), "
+                f"got {traffic_thresholds}"
+            )
+        self.traffic_thresholds = tuple(traffic_thresholds)
 
         # If true, cars arrive in a random way
         self.stochastic = stochastic
@@ -134,7 +167,7 @@ class TrafficLightEnv(gym.Env):
         """
         info = {
                     "max_step_count": self.max_steps,
-                    "max_cars_to_proccess": self.max_cars_to_proccess,
+                    "max_cars_to_process": self.max_cars_to_process,
                     "max_traffic_count": self.max_traffic_count,
                     "stochastic": self.stochastic,
                     "seed": self.seed,
@@ -349,7 +382,7 @@ class TrafficLightEnv(gym.Env):
         Returns:
             observation: [Light State, N traffic, S traffic, E traffic, W traffic, Extra time]
             reward: immediate reward
-            terminated: True once max_cars_to_proccess have been processed
+            terminated: True once max_cars_to_process have been processed
             truncated: True once max_steps steps have been taken
             info: internal parameters
         """
@@ -374,7 +407,7 @@ class TrafficLightEnv(gym.Env):
         self._add_car()
         self.step_count += 1
 
-        terminated = self.cars_processed >= self.max_cars_to_proccess
+        terminated = self.cars_processed >= self.max_cars_to_process
         truncated = self.step_count >= self.max_steps
 
         self.last_action = action
@@ -474,7 +507,7 @@ class TrafficLightEnv(gym.Env):
                     ax.text(col + 0.5, row + 0.85, lights[cell], ha="center",
                             va="center", fontsize=8, color="#dddddd")
 
-        if self.cars_processed >= self.max_cars_to_proccess:
+        if self.cars_processed >= self.max_cars_to_process:
             status = "TERMINATED (quota met)"
         elif self.step_count >= self.max_steps:
             status = "TRUNCATED (time limit)"
@@ -490,7 +523,7 @@ class TrafficLightEnv(gym.Env):
             f"action     {action}",
             f"reward     {reward}",
             f"light      {self.light_state.name}",
-            f"processed  {self.cars_processed} / {self.max_cars_to_proccess}",
+            f"processed  {self.cars_processed} / {self.max_cars_to_process}",
             f"waiting    {int(self._get_cars_waiting())} cars",
             f"status     {status}",
         ]), va="top", family="monospace", fontsize=9, linespacing=1.8)
