@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from environment.traffic_light import TrafficLightEnv
-from environment.states import LightState, TrafficState, GreenTimeState
+from environment.states import LightState, TrafficState, ExtraTimeState
 from environment.actions import Actions
 
 class Agent(ABC):
@@ -35,8 +35,8 @@ class Agent(ABC):
         self.seed = seed
         self.rng = np.random.default_rng(seed=self.seed)
 
-        # Observation space is [Light, N traffic, S traffic, E traffic, W traffic].
-        # The dimensions of each are [9, 4, 4, 4, 4]
+        # Observation space is [Light, N traffic, S traffic, E traffic, W traffic, Extra time].
+        # The dimensions of each are [9, 4, 4, 4, 4, 2]
         self.state_dimensions = tuple(int(n) for n in env.observation_space.nvec) # (9, 4, 4, 4, 4, 2)
         self.n_states = np.prod(self.state_dimensions)
         self.n_actions = env.action_space.n
@@ -112,7 +112,7 @@ class Agent(ABC):
         Q = (Q1 + Q2) / 2 if flag else Q1
 
         states = [
-            f"({LightState(s[0]).name}, {TrafficState(s[1]).name}, {TrafficState(s[2]).name}, {TrafficState(s[3]).name}, {TrafficState(s[4]).name}, {GreenTimeState(s[5]).name})"
+            f"({LightState(s[0]).name}, {TrafficState(s[1]).name}, {TrafficState(s[2]).name}, {TrafficState(s[3]).name}, {TrafficState(s[4]).name}, {ExtraTimeState(s[5]).name})"
             for s in np.ndindex(self.state_dimensions)
         ]
         actions = [action.name for action in Actions]

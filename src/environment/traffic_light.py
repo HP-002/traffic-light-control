@@ -4,11 +4,14 @@ import matplotlib.pyplot as plt
 import gymnasium as gym
 from gymnasium import spaces
 
-from states import LightState, TrafficState, GreenTimeState
+from states import LightState, TrafficState, ExtraTimeState
 from actions import Actions
 
 class TrafficLightEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
+
+    # Number of sides of the intersection (N, S, E, W)
+    NUM_SIDES = 4
 
     # Maps LightState to (index of the light in traffic_count, True if light is Green).
     traffic_light_index = {
@@ -27,6 +30,16 @@ class TrafficLightEnv(gym.Env):
         max_steps=25,
         max_cars_to_proccess=15,
         max_traffic_count=5,
+        arrival_rate=0.3,
+        deterministic_arrival_count=2,
+        car_process_count=(2, 1),
+        render_fps=4,
+        illegal_action_penalty=-10,
+        car_process_reward=5,
+        car_waiting_reward=-1,
+        traffic_thresholds=(1, 2),
+        time_threshold=3,
+        penalty_factor=0.95,
         stochastic=False,
         seed=42,
         render_mode=None,
@@ -40,11 +53,26 @@ class TrafficLightEnv(gym.Env):
         # maximum cars to process
         self.max_cars_to_proccess = max_cars_to_proccess
 
-        # Arrival rate for cars. Cars arrive based on a poisson distribution
-        self.arrival_rate = 0.3
+        # Arrival rate for cars on each side (N, S, E, W)
+        if np.isscalar(arrival_rate):
+            self.arrival_rate = [arrival_rate] * self.NUM_SIDES
+        else:
+            if len(arrival_rate) != self.NUM_SIDES:
+                raise ValueError(f"arrival_rate must be a number or a list of {self.NUM_SIDES} values, got {arrival_rate}")
+            self.arrival_rate = list(arrival_rate)
+
+        # Number of cars added to one side each step when not stochastic
+        self.deterministic_arrival_count = deterministic_arrival_count
 
         # maximum cars present in a single side at any given time
         self.max_traffic_count = max_traffic_count
+
+        # Number of cars to process when light is green and yellow
+        self.car_process_count_green = car_process_count[0]
+        self.car_process_count_yellow = car_process_count[1]
+
+        # Used to bucketize the traffic into LIGHT_TRAFFIC, MODERATE_TRAFFIC, and HEAVY_TRAFFIC
+        self.traffic_thresholds = traffic_thresholds
 
         # If true, cars arrive in a random way
         self.stochastic = stochastic
@@ -52,23 +80,29 @@ class TrafficLightEnv(gym.Env):
         self.rng = np.random.default_rng(seed=self.seed)
 
         self.render_mode = render_mode
+        # Copy so the class-level metadata shared by all instances is not modified
+        self.metadata = {**self.metadata, "render_fps": render_fps}
 
         # Action space
         self.action_space = spaces.Discrete(len(Actions))
         # Observation space
-        # Each State is [Light State, North Traffic, South Traffic, East Traffic, West Traffic, Time in Green]
-        self.observation_space = spaces.MultiDiscrete([len(LightState)] + [len(TrafficState)] * 4 + [len(GreenTimeState)])
+        # Each State is [Light State, North Traffic, South Traffic, East Traffic, West Traffic, ExtraTime in Green/Yellow]
+        self.observation_space = spaces.MultiDiscrete([len(LightState)] + [len(TrafficState)] * self.NUM_SIDES + [len(ExtraTimeState)])
 
         self.step_count = 0
         self.cars_processed = 0
 
         # Initial State
         self.light_state = LightState.ALL_RED
-        self.traffic_count = np.array([0] * 4) # N, S, E, W
+        self.traffic_count = np.array([0] * self.NUM_SIDES) # N, S, E, W
 
         # Used for calculating rewards
-        self.extra_green_penalty_rate = 0.95
-        self.time_in_green = 0
+        self.illegal_action_penalty = illegal_action_penalty
+        self.car_process_reward = car_process_reward
+        self.car_waiting_reward = car_waiting_reward
+        self.time_threshold = time_threshold
+        self.penalty_factor = penalty_factor # Penalty factor for reducing reward time spent in green/yellow > time_threshold
+        self.current_time_in_gy = 0
 
         # Required for render
         self.last_action = None
@@ -79,17 +113,17 @@ class TrafficLightEnv(gym.Env):
         """Convert internal state to observation format
 
         Returns:
-            np.array: Array with [Light State, N traffic, S traffic, E traffic, W traffic]
+            np.array: Array with [Light State, N traffic, S traffic, E traffic, W traffic, Extra time]
         """
         traffic_states = self._get_traffic_states()
-        green_time_state = self._get_green_time_state()
+        extra_time_state = self._get_extra_time_state()
         return np.array([
             self.light_state.value, 
             traffic_states[0], 
             traffic_states[1], 
             traffic_states[2], 
             traffic_states[3],
-            green_time_state,
+            extra_time_state,
         ], dtype=np.int64)
 
     def _get_info(self):
@@ -116,15 +150,20 @@ class TrafficLightEnv(gym.Env):
         """
         Reset the state of the environment to an initial state
         """
-        super().reset(seed=self.seed)
+        super().reset(seed=seed)
+
+        # Re-seed the arrival RNG only when a seed is passed, otherwise keep the existing stream
+        if seed is not None:
+            self.seed = seed
+            self.rng = np.random.default_rng(seed=seed)
 
         self.step_count = 0
         self.cars_processed = 0
 
         self.light_state = LightState.ALL_RED
-        self.traffic_count = np.array([0] * 4) # N, S, E, W
+        self.traffic_count = np.array([0] * self.NUM_SIDES) # N, S, E, W
 
-        self.time_in_green = 0
+        self.current_time_in_gy = 0
 
         self.last_action = None
         self.last_reward = None
@@ -175,27 +214,20 @@ class TrafficLightEnv(gym.Env):
 
     def _add_car(self):
         """Add a car to the intersection
-        - If stochastic, cars are added to the intersection based on a Poisson distribution with rate of `self.arrival_rate`.
-        - If deterministic, 2 cars are added to one side of the intersection each round on a rotational basis (N, S, E, W).
+        - If stochastic, cars are added to each side based on a Poisson distribution with that side's rate in `self.arrival_rate`.
+        - If deterministic, `self.deterministic_arrival_count` cars are added to one side of the intersection each round on a rotational basis (N, S, E, W).
         """
         if self.stochastic:
-            self.traffic_count += self.rng.poisson(self.arrival_rate, size=len(self.traffic_count))
+            self.traffic_count += self.rng.poisson(self.arrival_rate)
         else:
-            if self.step_count % 4 == 0:
-                self.traffic_count[0] += 2 # North
-            elif self.step_count % 4 == 1:
-                self.traffic_count[1] += 2 # South
-            elif self.step_count % 4 == 2:
-                self.traffic_count[2] += 2 # East
-            else:
-                self.traffic_count[3] += 2 # West
+            self.traffic_count[self.step_count % self.NUM_SIDES] += self.deterministic_arrival_count
 
         self.traffic_count = np.minimum(self.traffic_count, self.max_traffic_count)
 
     def _process_car(self):
         """Remove cars from the intersection if possible. For any side:
-        - If the side is GREEN, at most 2 cars are processed.
-        - If the side is YELLOW, at most 1 car is processed.
+        - If the side is GREEN, at most `car_process_count_green` cars are processed.
+        - If the side is YELLOW, at most `car_process_count_yellow` cars are processed.
         
         Returns:
             cars_to_process: number of cars processed or removed
@@ -205,13 +237,13 @@ class TrafficLightEnv(gym.Env):
 
         idx, is_green = self.traffic_light_index.get(self.light_state, (None, False))
 
-        # if (not all RED) and (there is at least one car for the NON-RED side)
-        if idx is not None and self.traffic_count[idx] > 0:
-            cars_to_process = 1
-            # If light is green and it has at least 2 cars, then process 2 cars
-            if is_green and self.traffic_count[idx] > 1:
-                cars_to_process = 2
-                
+        # if not all RED, process cars on the NON-RED side
+        if idx is not None:
+            cars_to_process = self.car_process_count_yellow
+            if is_green:
+                cars_to_process = self.car_process_count_green
+
+            cars_to_process = min(cars_to_process, self.traffic_count[idx])
             self.traffic_count[idx] -= cars_to_process
 
         self.cars_processed += cars_to_process
@@ -222,29 +254,37 @@ class TrafficLightEnv(gym.Env):
         idx, _ = self.traffic_light_index.get(self.light_state, (None, False))
         prev_idx, _ = self.traffic_light_index.get(prev_light, (None, False))
         if idx is None:
-            self.time_in_green = 0
+            self.current_time_in_gy = 0
         elif idx == prev_idx:
-            self.time_in_green += 1
+            self.current_time_in_gy += 1
         else:
-            self.time_in_green = 1
+            self.current_time_in_gy = 1
 
-    def _get_reward(self, cars_processed):
-        """Calculate the reward based on the number of cars processed and cars waiting.
-        +5 for every car passed and -1 for every car in the intersection. The reward for cars
-        processed also decreases over time if the same direction stays green (after more than 3 timesteps).
-
-        r = ((extra_green_penalty_rate ^ time) * 5 * cars_processed) - (cars_waiting)
+    def _get_reward(self, cars_processed, cars_waiting, is_legal):
+        """Calculate the reward based on the number of cars processed, number of cars waiting, and action.
 
         Args:
             cars_processed: number of cars that passed
+            cars_waiting: number of cars waiting on the red sides
+            is_legal: True if the action was legal, False otherwise
 
         Returns:
-            float: reward
+            float: immediate reward
         """
-        time = self.time_in_green
-        if time <= 3:
-            time = 0
-        return float(((self.extra_green_penalty_rate ** time) * 5 * cars_processed) - self._get_cars_waiting())
+        # Decay starts from the threshold so the reward does not jump when it is crossed
+        time = max(0, self.current_time_in_gy - self.time_threshold)
+        r = 0
+
+        if not is_legal:
+            r = self.illegal_action_penalty
+
+        r = (
+                r +
+                (self.penalty_factor ** time) * self.car_process_reward * cars_processed +
+                self.car_waiting_reward * cars_waiting
+            )
+
+        return float(r)
 
     def _get_traffic_state(self, count):
         """Find the state of the traffic based on traffic count
@@ -253,15 +293,18 @@ class TrafficLightEnv(gym.Env):
             count: traffic count (i.e. number of cars waiting)
 
         Returns:
-            TrafficState: Empty for 0, Light for 1, Moderate for 2, Heavy for 3+ cars
+            TrafficState: EMPTY for 0, LIGHT up to traffic_thresholds[0], MODERATE up to
+                traffic_thresholds[1], HEAVY above that
         """
         state = TrafficState.EMPTY
 
-        if count == 1:
+        if count == 0:
+            state = TrafficState.EMPTY
+        elif count <= self.traffic_thresholds[0]:
             state = TrafficState.LIGHT_TRAFFIC
-        elif count == 2:
+        elif count <= self.traffic_thresholds[1]:
             state = TrafficState.MODERATE_TRAFFIC
-        elif count >= 3:
+        else:
             state = TrafficState.HEAVY_TRAFFIC
     
         return state
@@ -274,21 +317,25 @@ class TrafficLightEnv(gym.Env):
         """
         return np.array([self._get_traffic_state(x).value for x in self.traffic_count], dtype=np.int64)
 
-    def _get_green_time_state(self):
-        """Return the GreenLightState based on the current time in green.
+    def _get_extra_time_state(self):
+        """Return the ExtraTimeState based on the current time in green or yellow (`current_time_in_gy`).
         
         Returns:
-            GreenLightState: BELOW if current time in green is below 4 and ABOVE otherwise
+            ExtraTimeState: BELOW if current_time_in_gy <= time_threshold and ABOVE otherwise
         """
-        return GreenTimeState.BELOW.value if self.time_in_green <= 3 else GreenTimeState.ABOVE.value
+        return ExtraTimeState.BELOW.value if self.current_time_in_gy <= self.time_threshold else ExtraTimeState.ABOVE.value
 
     def _get_cars_waiting(self):
-        """Calculate the number of cars waiting at the intersection (all sides).
+        """Calculate the number of cars waiting at the intersection (red sides only).
         
         Returns:
-            cars_waiting: the total number of cars waiting at the intersection (all sides)
+            cars_waiting: the total number of cars waiting at the intersection (red sides only)
         """
-        cars_waiting = np.sum(self.traffic_count)
+        cars_waiting = int(np.sum(self.traffic_count))
+
+        idx, _ = self.traffic_light_index.get(self.light_state, (None, False))
+        if idx is not None:
+            cars_waiting -= int(self.traffic_count[idx])
 
         return cars_waiting
 
@@ -300,8 +347,8 @@ class TrafficLightEnv(gym.Env):
             action: Action to take
 
         Returns:
-            observation: [Light State, N traffic, S traffic, E traffic, W traffic]
-            reward: +5 per car processed, -1 per car waiting
+            observation: [Light State, N traffic, S traffic, E traffic, W traffic, Extra time]
+            reward: immediate reward
             terminated: True once max_cars_to_proccess have been processed
             truncated: True once max_steps steps have been taken
             info: internal parameters
@@ -313,18 +360,15 @@ class TrafficLightEnv(gym.Env):
 
         # Check if the action is allowed. If not, leave light_state unchanged for the step
         is_allowed = self._allowed_light_change(requested_state)
-        reward = 0
         if is_allowed:
             self.light_state = requested_state
-        else:
-            reward -= 10
 
         cars_processed = self._process_car()
+        cars_waiting = self._get_cars_waiting()
 
         self._update_time_in_green(prev_light=prev_light)
 
-        # reqard will be +5 for each car processed and -1 for each car waiting
-        reward += self._get_reward(cars_processed)
+        reward = self._get_reward(cars_processed, cars_waiting, is_allowed)
 
         # Add more cars to environment
         self._add_car()
@@ -422,7 +466,7 @@ class TrafficLightEnv(gym.Env):
                     label = f"{sides[cell]}: {count}\n{state.name.replace('_TRAFFIC', '')}"
                     ax.text(col + 0.5, row + 0.5, label, ha="center", va="center",
                             fontsize=8, fontweight="bold",
-                            color="white" if state.value >= 2 else "black")
+                            color="white" if state.value >= TrafficState.MODERATE_TRAFFIC.value else "black")
                 elif cell in lights:
                     ax.add_patch(plt.Circle(
                         (col + 0.5, row + 0.5), 0.22, edgecolor="black",
