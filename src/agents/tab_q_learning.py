@@ -1,8 +1,8 @@
 import numpy as np
 
-from agents.base import Agent
+from agents.tab_base import TabularAgent
 
-class QLearningAgent(Agent):
+class TabularQLAgent(TabularAgent):
     def _init_tables(self):
         """Initialize the Q Table"""
         self.Q = np.zeros((self.n_states, self.n_actions))

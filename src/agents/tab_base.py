@@ -7,7 +7,7 @@ from environment.traffic_light import TrafficLightEnv
 from environment.states import LightState, TrafficState, ExtraTimeState
 from environment.actions import Actions
 
-class Agent(ABC):
+class TabularAgent(ABC):
     def __init__(
         self,
         env: TrafficLightEnv,
