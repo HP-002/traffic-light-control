@@ -1,0 +1,58 @@
+# Double DQN agent on the stochastic traffic light environment
+
+agent:
+  name: double_dqn
+  learning_rate: 0.001        # Adam step size
+  discount_factor: 0.95       # gamma
+  initial_epsilon: 1.0
+  epsilon_decay: 0.996        # epsilon <- max(minimum_epsilon, epsilon_decay * epsilon) once per episode
+  minimum_epsilon: 0.05
+  seed: 42
+
+  # Network
+  hidden_sizes: [64, 64]      # one ReLU layer per entry
+
+  # Replay buffer and updates (all counted in environment steps)
+  buffer_size: 50000
+  batch_size: 64
+  learning_starts: 1000       # steps collected before the first update; must be between batch_size and buffer_size
+  train_frequency: 1          # optimize every this many steps
+  target_update_frequency: 1000  # copy the online network into the target network every this many steps
+  reward_scale: 0.02          # rewards are multiplied by this before going into the replay buffer
+
+environment:
+  stochastic: true
+  max_steps: 500              # truncate after this many steps
+  max_cars_to_process: 500    # terminate once this many cars have passed
+  max_traffic_count: 25       # cap on cars waiting per side
+  seed: 42
+
+  arrival_rate: 0.3           # Poisson rate
+  deterministic_arrival_count: 2  # cars added to one side per step
+  car_process_count: [2, 1]   # max cars that pass in one step on [GREEN, YELLOW]
+
+  # Reward
+  car_process_reward: 5       # per car that passes
+  car_waiting_reward: -1      # per car waiting on a red side
+  illegal_action_penalty: -10 # when the requested light change is not allowed
+  penalty_factor: 0.95        # fraction of car_process_reward kept per step past time_threshold (0.95 = 5% decay)
+  time_threshold: 3           # steps in green/yellow before decay starts / ExtraTimeState flips to ABOVE
+
+  traffic_thresholds: [1, 2]  # max cars for LIGHT and MODERATE; above that is HEAVY
+
+  render_fps: 4
+
+training:
+  n_episodes: 1000            # 500k steps at max_steps=500
+
+evaluation:
+  n_episodes: 10
+
+output:
+  results_dir: results/double_dqn/stochastic
+  plots_dir: results/double_dqn/stochastic/plots
+  videos_dir: results/double_dqn/stochastic/videos
+  video:
+    fps: 4                    # same as render_fps
+    loop: 0                   # 0 loops forever
+    hold_last: 2              # extra frames to hold the final frame for
