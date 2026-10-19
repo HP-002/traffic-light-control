@@ -70,6 +70,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
 
         # Q network is trained, target network is a periodic copy of it used for the targets.
         # The weights are initialized from the seed without changing torch's global random state.
+        self.hidden_sizes = tuple(hidden_sizes)
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(self.seed)
             self.q_network = QNetwork(self.state_size, self.n_actions, hidden_sizes)
@@ -81,6 +82,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         self.loss_fn = nn.SmoothL1Loss()
 
         # Experience replay
+        self.buffer_size = buffer_size
         self.replay_buffer = ReplayBuffer(buffer_size, self.state_size, self.rng)
         self.batch_size = batch_size
         self.learning_starts = learning_starts
@@ -140,6 +142,28 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         """
         return self.loss_per_episode
 
+    def get_hyperparameters(self):
+        """Returns the hyperparameters of `EpsilonGreedyAgent` along with those of the network and replay buffer."""
+        return {
+            **super().get_hyperparameters(),
+            "learning_rate": self.lr,
+            "hidden_sizes": list(self.hidden_sizes),
+            "buffer_size": self.buffer_size,
+            "batch_size": self.batch_size,
+            "learning_starts": self.learning_starts,
+            "train_frequency": self.train_frequency,
+            "target_update_frequency": self.target_update_frequency,
+        }
+
+    def get_results(self):
+        """Returns the results of `EpsilonGreedyAgent` along with the mean loss per episode.
+        NaN losses (episodes without updates) become None, which is saved as `null` in JSON.
+        """
+        return {
+            **super().get_results(),
+            "loss_per_episode": [None if np.isnan(l) else float(l) for l in self.loss_per_episode],
+        }
+
     def print_q_network_architecture(self):
         """Print the layers of the Q network along with its input size, output actions and parameter count.
         The target network has the same architecture.
@@ -163,7 +187,8 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
 
     def save_checkpoint(self, filename):
         """Save everything needed to resume training to `filename`: both networks, the optimizer, the replay buffer,
-        epsilon, the step count, the random generator and the logs. The environment's random state is not included.
+        epsilon, the step count, the random generator and the training logs (reward, epsilon, loss and traffic metrics).
+        The environment's random state and the evaluation logs are not included.
         """
         torch.save(
             {
@@ -177,6 +202,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
                 "reward_per_episode": self.reward_per_episode,
                 "epsilon_per_episode": self.epsilon_per_episode,
                 "loss_per_episode": self.loss_per_episode,
+                "metrics_per_episode": self.metrics_per_episode,
             },
             filename,
         )
@@ -196,6 +222,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         self.reward_per_episode = checkpoint["reward_per_episode"]
         self.epsilon_per_episode = checkpoint["epsilon_per_episode"]
         self.loss_per_episode = checkpoint["loss_per_episode"]
+        self.metrics_per_episode = checkpoint["metrics_per_episode"]
 
     def get_action_values(self, s):
         """Returns the values of the actions for the encoded state `s` from the Q network"""
@@ -277,7 +304,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
 
     def train(self, n_episodes=10):
         """Train the agent for given number of episodes.
-        Repeated calls continue training and append to the reward, epsilon and loss logs.
+        Repeated calls continue training and append to the reward, epsilon, loss and traffic metric logs.
 
         Args:
             `n_episodes`: The number of episodes to train for. default = 10

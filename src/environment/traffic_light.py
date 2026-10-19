@@ -1,3 +1,6 @@
+from collections import deque
+from dataclasses import dataclass
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -12,6 +15,14 @@ class TrafficLightEnv(gym.Env):
 
     # Number of sides of the intersection (N, S, E, W)
     NUM_SIDES = 4
+
+    # Keys of the dict returned by `get_episode_metrics`
+    METRIC_NAMES = (
+        "average_waiting_time",
+        "max_waiting_time",
+        "average_queue_length",
+        "throughput",
+    )
 
     # Maps LightState to (index of the light in traffic_count, True if light is Green).
     traffic_light_index = {
@@ -129,6 +140,12 @@ class TrafficLightEnv(gym.Env):
         self.light_state = LightState.ALL_RED
         self.traffic_count = np.array([0] * self.NUM_SIDES) # N, S, E, W
 
+        # Individual cars on each side in arrival order, kept in sync with traffic_count. Used for the metrics.
+        self.queues = [deque() for _ in range(self.NUM_SIDES)]
+        self.departed_cars = []
+        # Sum over steps of the cars left queued after processing
+        self.total_queue_length = 0
+
         # Used for calculating rewards
         self.illegal_action_penalty = illegal_action_penalty
         self.car_process_reward = car_process_reward
@@ -196,6 +213,10 @@ class TrafficLightEnv(gym.Env):
         self.light_state = LightState.ALL_RED
         self.traffic_count = np.array([0] * self.NUM_SIDES) # N, S, E, W
 
+        self.queues = [deque() for _ in range(self.NUM_SIDES)]
+        self.departed_cars = []
+        self.total_queue_length = 0
+
         self.current_time_in_gy = 0
 
         self.last_action = None
@@ -249,13 +270,20 @@ class TrafficLightEnv(gym.Env):
         """Add a car to the intersection
         - If stochastic, cars are added to each side based on a Poisson distribution with that side's rate in `self.arrival_rate`.
         - If deterministic, `self.deterministic_arrival_count` cars are added to one side of the intersection each round on a rotational basis (N, S, E, W).
+
+        Cars arriving at a side that already has `max_traffic_count` cars are turned away.
         """
         if self.stochastic:
-            self.traffic_count += self.rng.poisson(self.arrival_rate)
+            arrivals = self.rng.poisson(self.arrival_rate)
         else:
-            self.traffic_count[self.step_count % self.NUM_SIDES] += self.deterministic_arrival_count
+            arrivals = np.zeros(self.NUM_SIDES, dtype=np.int64)
+            arrivals[self.step_count % self.NUM_SIDES] = self.deterministic_arrival_count
 
-        self.traffic_count = np.minimum(self.traffic_count, self.max_traffic_count)
+        arrivals = np.minimum(arrivals, self.max_traffic_count - self.traffic_count)
+        self.traffic_count += arrivals
+
+        for queue, n in zip(self.queues, arrivals):
+            queue.extend(Car() for _ in range(n))
 
     def _process_car(self):
         """Remove cars from the intersection if possible. For any side:
@@ -278,6 +306,10 @@ class TrafficLightEnv(gym.Env):
 
             cars_to_process = min(cars_to_process, self.traffic_count[idx])
             self.traffic_count[idx] -= cars_to_process
+
+            # Cars leave in the order they arrived
+            for _ in range(cars_to_process):
+                self.departed_cars.append(self.queues[idx].popleft())
 
         self.cars_processed += cars_to_process
         return cars_to_process
@@ -372,6 +404,43 @@ class TrafficLightEnv(gym.Env):
 
         return cars_waiting
 
+    def _update_car_times(self):
+        """Called once per step after cars are processed. Every car still queued on a red side
+        (the same cars counted by `_get_cars_waiting`) gets one step of waiting time.
+        """
+        idx, _ = self.traffic_light_index.get(self.light_state, (None, False))
+        for side, queue in enumerate(self.queues):
+            if side != idx:
+                for car in queue:
+                    car.waiting_time += 1
+
+        self.total_queue_length += int(np.sum(self.traffic_count))
+
+    def get_episode_metrics(self):
+        """Traffic metrics of the current episode, so far. Times are in steps.
+
+        Cars still queued are included with the time they have waited so far, so that a side
+        that is never served still shows up in the waiting time.
+
+        Returns:
+            dict: with the keys in `METRIC_NAMES`
+                - average_waiting_time: mean steps a car spent queued on a red side
+                - max_waiting_time: longest steps any car spent queued on a red side
+                - average_queue_length: mean cars queued on all sides after the cars of a step were processed
+                - throughput: cars processed per step
+            All are 0 before the first step.
+        """
+        cars = self.departed_cars + [car for queue in self.queues for car in queue]
+        waiting_times = [car.waiting_time for car in cars]
+        steps = self.step_count
+
+        return {
+            "average_waiting_time": float(np.mean(waiting_times)) if cars else 0.0,
+            "max_waiting_time": float(max(waiting_times, default=0)),
+            "average_queue_length": float(self.total_queue_length / steps) if steps else 0.0,
+            "throughput": float(self.cars_processed / steps) if steps else 0.0,
+        }
+
     def step(self, action: Actions):
         """
         Execute one timestep within the environment
@@ -398,6 +467,7 @@ class TrafficLightEnv(gym.Env):
 
         cars_processed = self._process_car()
         cars_waiting = self._get_cars_waiting()
+        self._update_car_times()
 
         self._update_time_in_green(prev_light=prev_light)
 

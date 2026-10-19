@@ -55,6 +55,10 @@ class TabularAgent(EpsilonGreedyAgent):
         """Update the Q table(s) with one transition."""
         self.update_q_value(s, action, reward, next_s, terminated)
 
+    def get_hyperparameters(self):
+        """Returns the hyperparameters of `EpsilonGreedyAgent` along with the learning rate."""
+        return {**super().get_hyperparameters(), "learning_rate": self.lr}
+
     def get_state_row(self, state):
         """Get the row index based on the state (Light, N traffic, S traffic, E traffic, W traffic).
 
