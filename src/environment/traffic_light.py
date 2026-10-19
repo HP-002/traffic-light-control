@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import gymnasium as gym
 from gymnasium import spaces
 
+from car import Car
 from states import LightState, TrafficState, ExtraTimeState
 from actions import Actions
 
