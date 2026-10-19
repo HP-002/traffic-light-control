@@ -26,6 +26,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         learning_starts=100,
         train_frequency=1,
         target_update_frequency=250,
+        reward_scale=1.0,
         seed=42,
     ):
         """Initialize the agent.
@@ -43,6 +44,8 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
             learning_starts: transitions to collect before the first update. At least `batch_size` and at most `buffer_size`
             train_frequency: steps between updates of the Q network
             target_update_frequency: steps between copies of the Q network into the target network
+            reward_scale: rewards are multiplied by this before being stored in the replay buffer, keeping the
+                Q values small. Logged rewards stay unscaled. Must be positive so the optimal policy is unchanged
             seed: seed for action selection, replay sampling and network initialization
         """
         if batch_size < 1:
@@ -57,6 +60,8 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
                 f"train_frequency and target_update_frequency must be at least 1, "
                 f"got {train_frequency} and {target_update_frequency}"
             )
+        if reward_scale <= 0:
+            raise ValueError(f"reward_scale must be positive, got {reward_scale}")
 
         super().__init__(env, discount_factor, initial_epsilon, epsilon_decay, minimum_epsilon, seed)
 
@@ -88,6 +93,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         self.learning_starts = learning_starts
         self.train_frequency = train_frequency
         self.target_update_frequency = target_update_frequency
+        self.reward_scale = reward_scale
 
         # Total environment steps taken while training
         self.n_steps = 0
@@ -153,6 +159,7 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
             "learning_starts": self.learning_starts,
             "train_frequency": self.train_frequency,
             "target_update_frequency": self.target_update_frequency,
+            "reward_scale": self.reward_scale,
         }
 
     def get_results(self):
@@ -247,13 +254,13 @@ class DeepNetworkAgent(EpsilonGreedyAgent):
         Args:
             s: Encoded current state.
             action: Action taken from current state.
-            reward: Immediate reward recieved.
+            reward: Immediate reward recieved, unscaled. It is multiplied by `reward_scale` before being stored.
             next_s: Encoded next state reached.
             terminated: True if next state is terminal, else False.
         Returns:
             `float | None`: the loss if the Q network was updated, else None.
         """
-        self.replay_buffer.add(s, int(action), reward, next_s, terminated)
+        self.replay_buffer.add(s, int(action), reward * self.reward_scale, next_s, terminated)
         self.n_steps += 1
 
         loss = None
