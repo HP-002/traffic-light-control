@@ -10,6 +10,7 @@ from gymnasium import spaces
 from car import Car
 from states import LightState, TrafficState, ExtraTimeState
 from actions import Actions
+from rendering import THEMES, draw_frame
 
 class TrafficLightEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
@@ -46,6 +47,7 @@ class TrafficLightEnv(gym.Env):
         deterministic_arrival_count=2,
         car_process_count=(2, 1),
         render_fps=4,
+        render_theme="light",
         illegal_action_penalty=-10,
         car_process_reward=5,
         car_waiting_reward=-1,
@@ -66,6 +68,7 @@ class TrafficLightEnv(gym.Env):
             deterministic_arrival_count: cars added to one side each step when not stochastic
             car_process_count: max cars processed in one step as (green, yellow)
             render_fps: frames per second for rendering
+            render_theme: color theme of the rendered frames, "light" or "dark"
             illegal_action_penalty: reward for an illegal light change
             car_process_reward: reward per car processed
             car_waiting_reward: reward per car waiting on a red side
@@ -81,7 +84,7 @@ class TrafficLightEnv(gym.Env):
 
         Raises:
             ValueError: if arrival_rate is a list without 4 values, car_process_count is not a
-                (green, yellow) pair, or traffic_thresholds is not a valid pair
+                (green, yellow) pair, traffic_thresholds is not a valid pair, or render_theme is unknown
         """
         # Maximum steps to take by agent
         self.max_steps = max_steps
@@ -127,6 +130,9 @@ class TrafficLightEnv(gym.Env):
         self.render_mode = render_mode
         # Copy so the class-level metadata shared by all instances is not modified
         self.metadata = {**self.metadata, "render_fps": render_fps}
+        if render_theme not in THEMES:
+            raise ValueError(f"render_theme must be one of {list(THEMES)}, got {render_theme}")
+        self.render_theme = render_theme
 
         # Action space
         self.action_space = spaces.Discrete(len(Actions))
@@ -159,6 +165,7 @@ class TrafficLightEnv(gym.Env):
         self.last_action = None
         self.last_reward = None
         self.action_rejected = False
+        self.reward_history = []
 
     def _get_obs(self):
         """Convert internal state to observation format
@@ -223,6 +230,7 @@ class TrafficLightEnv(gym.Env):
         self.last_action = None
         self.last_reward = None
         self.action_rejected = False
+        self.reward_history = []
 
         observation = self._get_obs()
         info = self._get_info()
@@ -484,6 +492,7 @@ class TrafficLightEnv(gym.Env):
         self.last_action = action
         self.last_reward = reward
         self.action_rejected = not is_allowed
+        self.reward_history.append(reward)
 
         observation = self._get_obs()
         info = self._get_info()
@@ -526,86 +535,12 @@ class TrafficLightEnv(gym.Env):
 
     def render(self):
         """
-        Visualize the environment
+        Visualize the environment. The drawing is done in `rendering.draw_frame`.
 
         Returns:
             np.array: RGB frame if render_mode is "rgb_array", else None
         """
-        # Positions of entering sides and lights for each side in the 4x4 grid
-        sides = {(0, 1): "N", (2, 0): "W", (1, 3): "E", (3, 2): "S"}
-        lights = {(1, 1): "N", (2, 1): "W", (1, 2): "E", (2, 2): "S"}
-
-        # Indices for traffic_count
-        index = {"N": 0, "S": 1, "E": 2, "W": 3}
-
-        #                   EMPTY       LIGHT       MODERATE        HEAVY
-        traffic_shades = ["#ffffff", "#94b7d2", "#4b80ae", "#073e75"]
-        lamps = {"red": "#ff0000", "yellow": "#ffbf00", "green": "#00ff2f"}
-
-        fig, (ax, panel) = plt.subplots(
-            1, 2, figsize=(8, 4.2), gridspec_kw={"width_ratios": [3, 1.7]}
-        )
-        ax.set_xlim(0, 4)
-        ax.set_ylim(4, 0) # row 0 at the top
-        ax.set_aspect("equal")
-        ax.axis("off")
-
-        for row in range(4):
-            for col in range(4):
-                cell = (row, col)
-
-                if cell in sides:
-                    count = int(self.traffic_count[index[sides[cell]]])
-                    state = self._get_traffic_state(count)
-                    color = traffic_shades[state.value]
-                elif row in (0, 3) and col in (0, 3):
-                    color = "#7fb069" # grass (cornrs)
-                else:
-                    color = "#4a4a4a" # road
-
-                ax.add_patch(plt.Rectangle((col, row), 1, 1, facecolor=color,
-                                           edgecolor="white", linewidth=1.5))
-
-                if cell in sides:
-                    label = f"{sides[cell]}: {count}\n{state.name.replace('_TRAFFIC', '')}"
-                    ax.text(col + 0.5, row + 0.5, label, ha="center", va="center",
-                            fontsize=8, fontweight="bold",
-                            color="white" if state.value >= TrafficState.MODERATE_TRAFFIC.value else "black")
-                elif cell in lights:
-                    ax.add_patch(plt.Circle(
-                        (col + 0.5, row + 0.5), 0.22, edgecolor="black",
-                        facecolor=lamps[self._signal_color(lights[cell])]))
-                    ax.text(col + 0.5, row + 0.85, lights[cell], ha="center",
-                            va="center", fontsize=8, color="#dddddd")
-
-        if self.cars_processed >= self.max_cars_to_process:
-            status = "TERMINATED (quota met)"
-        elif self.step_count >= self.max_steps:
-            status = "TRUNCATED (time limit)"
-        else:
-            status = "RUNNING"
-
-        action = self.last_action.name if self.last_action is not None else "--"
-        reward = f"{self.last_reward:+.1f}" if self.last_reward is not None else "--"
-
-        panel.axis("off")
-        panel.text(0, 0.95, "\n".join([
-            f"step       {self.step_count} / {self.max_steps}",
-            f"action     {action}",
-            f"reward     {reward}",
-            f"light      {self.light_state.name}",
-            f"processed  {self.cars_processed} / {self.max_cars_to_process}",
-            f"waiting    {int(self._get_cars_waiting())} cars",
-            f"status     {status}",
-        ]), va="top", family="monospace", fontsize=9, linespacing=1.8)
-
-        # Show that an illegal action was blocked
-        if self.action_rejected:
-            panel.text(0, 0.13, "ILLEGAL TRANSITION\nlight unchanged", va="top",
-                       family="monospace", fontsize=9, fontweight="bold",
-                       color="#e03131")
-
-        fig.tight_layout()
+        fig = draw_frame(self, self.render_theme)
 
         if self.render_mode == "rgb_array":
             fig.canvas.draw()

@@ -30,6 +30,7 @@ environment:
   traffic_thresholds: [1, 2]  # max cars for LIGHT and MODERATE; above that is HEAVY
 
   render_fps: 4
+  render_theme: light         # "light" or "dark"
 
 training:
   n_episodes: 100000
